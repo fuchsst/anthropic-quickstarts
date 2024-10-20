@@ -1,12 +1,21 @@
 // app/api/finance/route.ts
 import { NextRequest } from "next/server";
-import Anthropic from "@anthropic-ai/sdk";
+import { BedrockRuntimeClient, InvokeModelCommand } from "@aws-sdk/client-bedrock-runtime";
 import type { ChartData } from "@/types/chart";
 
-// Initialize Anthropic client with correct headers
-const anthropic = new Anthropic({
-  apiKey: process.env.ANTHROPIC_API_KEY!,
+// Initialize AWS Bedrock client
+const bedrockClient = new BedrockRuntimeClient({
+  region: process.env.AWS_REGION,
+  credentials: {
+    accessKeyId: process.env.AWS_ACCESS_KEY_ID!,
+    secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY!,
+  },
 });
+
+// Check if AWS credentials are set
+if (!process.env.AWS_REGION || !process.env.AWS_ACCESS_KEY_ID || !process.env.AWS_SECRET_ACCESS_KEY) {
+  console.error("AWS credentials are not properly set in the environment variables.");
+}
 
 export const runtime = "edge";
 
@@ -128,7 +137,7 @@ export async function POST(req: NextRequest) {
     }
 
     // Convert all previous messages
-    let anthropicMessages = messages.map((msg: any) => ({
+    let bedrockMessages = messages.map((msg: any) => ({
       role: msg.role,
       content: msg.content,
     }));
@@ -150,7 +159,7 @@ export async function POST(req: NextRequest) {
           const textContent = decodeURIComponent(escape(atob(base64)));
 
           // Replace only the last message with the file content
-          anthropicMessages[anthropicMessages.length - 1] = {
+          bedrockMessages[bedrockMessages.length - 1] = {
             role: "user",
             content: [
               {
@@ -165,7 +174,7 @@ export async function POST(req: NextRequest) {
           };
         } else if (mediaType.startsWith("image/")) {
           // Handle image files
-          anthropicMessages[anthropicMessages.length - 1] = {
+          bedrockMessages[bedrockMessages.length - 1] = {
             role: "user",
             content: [
               {
@@ -192,15 +201,15 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    console.log("🚀 Final Anthropic API Request:", {
-      endpoint: "messages.create",
+    console.log("🚀 Final AWS Bedrock API Request:", {
+      endpoint: "InvokeModelCommand",
       model,
       max_tokens: 4096,
       temperature: 0.7,
-      messageCount: anthropicMessages.length,
+      messageCount: bedrockMessages.length,
       tools: tools.map((t) => t.name),
       messageStructure: JSON.stringify(
-        anthropicMessages.map((msg) => ({
+        bedrockMessages.map((msg) => ({
           role: msg.role,
           content:
             typeof msg.content === "string"
@@ -212,14 +221,16 @@ export async function POST(req: NextRequest) {
       ),
     });
 
-    const response = await anthropic.messages.create({
-      model,
-      max_tokens: 4096,
-      temperature: 0.7,
-      tools: tools,
-      tool_choice: { type: "auto" },
-      messages: anthropicMessages,
-      system: `You are a financial data visualization expert. Your role is to analyze financial data and create clear, meaningful visualizations using generate_graph_data tool:
+    const input = {
+      modelId: "anthropic." + model +"-v1:0",
+      contentType: "application/json",
+      accept: "application/json",
+      body: JSON.stringify({
+        anthropic_version: "bedrock-2023-05-31",
+        max_tokens: 4096,
+        temperature: 0.7,
+        messages: bedrockMessages,
+        system: `You are a financial data visualization expert. Your role is to analyze financial data and create clear, meaningful visualizations using generate_graph_data tool:
 
 Here are the chart types available and their ideal use cases:
 
@@ -327,28 +338,36 @@ Never:
 - NEVER SAY you are using the generate_graph_data tool, just execute it when needed.
 
 Focus on clear financial insights and let the visualization enhance understanding.`,
-    });
+        tools: tools,
+        tool_choice: { type: "auto" },
+      }),
+    };
 
-    console.log("✅ Anthropic API Response received:", {
+    const command = new InvokeModelCommand(input);
+    const response = await bedrockClient.send(command);
+
+    const responseBody = JSON.parse(new TextDecoder().decode(response.body));
+
+    console.log("✅ AWS Bedrock API Response received:", {
       status: "success",
-      stopReason: response.stop_reason,
-      hasToolUse: response.content.some((c) => c.type === "tool_use"),
-      contentTypes: response.content.map((c) => c.type),
+      stopReason: responseBody.stop_reason,
+      hasToolUse: responseBody.content.some((c: any) => c.type === "tool_use"),
+      contentTypes: responseBody.content.map((c: any) => c.type),
       contentLength:
-        response.content[0].type === "text"
-          ? response.content[0].text.length
+        responseBody.content[0].type === "text"
+          ? responseBody.content[0].text.length
           : 0,
-      toolOutput: response.content.find((c) => c.type === "tool_use")
+      toolOutput: responseBody.content.find((c: any) => c.type === "tool_use")
         ? JSON.stringify(
-            response.content.find((c) => c.type === "tool_use"),
+            responseBody.content.find((c: any) => c.type === "tool_use"),
             null,
             2,
           )
         : "No tool used",
     });
 
-    const toolUseContent = response.content.find((c) => c.type === "tool_use");
-    const textContent = response.content.find((c) => c.type === "text");
+    const toolUseContent = responseBody.content.find((c: any) => c.type === "tool_use");
+    const textContent = responseBody.content.find((c: any) => c.type === "text");
 
     const processToolResponse = (toolUseContent: any) => {
       if (!toolUseContent) return null;
@@ -408,7 +427,7 @@ Focus on clear financial insights and let the visualization enhance understandin
     return new Response(
       JSON.stringify({
         content: textContent?.text || "",
-        hasToolUse: response.content.some((c) => c.type === "tool_use"),
+        hasToolUse: responseBody.content.some((c: any) => c.type === "tool_use"),
         toolUse: toolUseContent,
         chartData: processedChartData,
       }),
@@ -430,22 +449,22 @@ Focus on clear financial insights and let the visualization enhance understandin
     });
 
     // Add specific error handling for different scenarios
-    if (error instanceof Anthropic.APIError) {
+    if (error instanceof Error && error.name === "ServiceException") {
       return new Response(
         JSON.stringify({
           error: "API Error",
           details: error.message,
-          code: error.status,
+          code: (error as any).Code,
         }),
-        { status: error.status },
+        { status: 500 },
       );
     }
 
-    if (error instanceof Anthropic.AuthenticationError) {
+    if (error instanceof Error && error.name === "UnrecognizedClientException") {
       return new Response(
         JSON.stringify({
           error: "Authentication Error",
-          details: "Invalid API key or authentication failed",
+          details: "Invalid AWS credentials or permissions",
         }),
         { status: 401 },
       );

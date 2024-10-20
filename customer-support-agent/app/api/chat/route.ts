@@ -1,11 +1,15 @@
-import Anthropic from "@anthropic-ai/sdk";
+import { BedrockRuntimeClient, InvokeModelCommand } from "@aws-sdk/client-bedrock-runtime";
 import { z } from "zod";
 import { retrieveContext, RAGSource } from "@/app/lib/utils";
 import crypto from "crypto";
 import customerSupportCategories from "@/app/lib/customer_support_categories.json";
 
-const anthropic = new Anthropic({
-  apiKey: process.env.ANTHROPIC_API_KEY,
+const bedrockClient = new BedrockRuntimeClient({
+  region: process.env.AWS_REGION,
+  credentials: {
+    accessKeyId: process.env.AWS_ACCESS_KEY_ID!,
+    secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY!,
+  },
 });
 
 // Debug message helper function
@@ -78,7 +82,7 @@ export async function POST(req: Request) {
     debugMessage("🚀 API route called", {
       messagesReceived: messages.length,
       latestMessageLength: latestMessage.length,
-      anthropicKeySlice: process.env.ANTHROPIC_API_KEY?.slice(0, 4) + "****",
+      awsKeySlice: process.env.AWS_ACCESS_KEY_ID?.slice(0, 4) + "****",
     }),
   ).slice(0, MAX_DEBUG_LENGTH);
 
@@ -213,32 +217,38 @@ export async function POST(req: Request) {
     console.log(`🚀 Query Processing`);
     measureTime("Claude Generation Start");
 
-    const anthropicMessages = messages.map((msg: any) => ({
+    const bedrockMessages = messages.map((msg: any) => ({
       role: msg.role,
       content: msg.content,
     }));
 
-    anthropicMessages.push({
+    bedrockMessages.push({
       role: "assistant",
       content: "{",
     });
 
-    const response = await anthropic.messages.create({
-      model: model,
-      max_tokens: 1000,
-      messages: anthropicMessages,
-      system: systemPrompt,
-      temperature: 0.3,
-    });
+    const input = {
+      modelId: "anthropic." + model + "-v1:0",
+      contentType: "application/json",
+      accept: "application/json",
+      body: JSON.stringify({
+        anthropic_version: "bedrock-2023-05-31",
+        max_tokens: 1000,
+        messages: bedrockMessages,
+        system: systemPrompt,
+        temperature: 0.3,
+      }),
+    };
+
+    const command = new InvokeModelCommand(input);
+    const response = await bedrockClient.send(command);
 
     measureTime("Claude Generation Complete");
     console.log("✅ Message generation completed");
 
     // Extract text content from the response
-    const textContent = "{" + response.content
-      .filter((block): block is Anthropic.TextBlock => block.type === "text")
-      .map((block) => block.text)
-      .join(" ");
+    const responseBody = JSON.parse(new TextDecoder().decode(response.body));
+    const textContent = "{" + responseBody.content[0].text;
 
     // Parse the JSON response
     let parsedResponse;
