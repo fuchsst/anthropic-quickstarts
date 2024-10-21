@@ -41,7 +41,9 @@ npm install
 
 3. Create a `.env.local` file in the root directory:
 ```env
-ANTHROPIC_API_KEY=your_api_key_here
+AWS_REGION=eu-central-1
+AWS_ACCESS_KEY_ID=your_aws_key_here
+AWS_SECRET_ACCESS_KEY=your_aws_secret_here
 ```
 
 4. Run the development server:

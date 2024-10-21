@@ -25,9 +25,9 @@ An advanced, fully customizable customer support chat interface powered by Claud
 Create a `.env.local` file in the root directory with the following variables:
 
 ```
-ANTHROPIC_API_KEY=your_anthropic_api_key
-BAWS_ACCESS_KEY_ID=your_aws_access_key
-BAWS_SECRET_ACCESS_KEY=your_aws_secret_key
+AWS_REGION=eu-central-1
+AWS_ACCESS_KEY_ID=your_aws_key_here
+AWS_SECRET_ACCESS_KEY=your_aws_secret_here
 ```
 
 Note: We are adding a 'B' in front of the AWS environment variables for a reason that will be discussed later in the deployment section.
